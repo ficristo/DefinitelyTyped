@@ -1,8 +1,8 @@
-// Type definitions for non-npm package frida-gum 14.4
+// Type definitions for non-npm package frida-gum 15.1
 // Project: https://github.com/frida/frida
 // Definitions by: Ole André Vadla Ravnås <https://github.com/oleavr>
 // Definitions: https://github.com/DefinitelyTyped/DefinitelyTyped
-// TypeScript Version: 2.4
+// Minimum TypeScript Version: 3.5
 
 /**
  * Returns a hexdump of the provided ArrayBuffer or NativePointerValue target.
@@ -1501,6 +1501,29 @@ interface ObjectWrapper {
     handle: NativePointer;
 }
 
+interface ArrayBufferConstructor {
+    /**
+     * Creates an ArrayBuffer backed by an existing memory region. Unlike
+     * the NativePointer `read*()` and `write*()` APIs, no validation is
+     * performed on access, meaning a bad pointer will crash the process.
+     *
+     * @param address Base address of the region. Passing `NULL` will result
+     *                in an empty buffer.
+     * @param size Size of the region. Passing `0` will result in an empty
+     *             buffer.
+     */
+    wrap(address: NativePointerValue, size: number): ArrayBuffer;
+}
+
+interface ArrayBuffer {
+    /**
+     * Gets a pointer to the base address of the ArrayBuffer's backing store.
+     * It is the caller's responsibility to keep the buffer alive while the
+     * backing store is still being used.
+     */
+    unwrap(): NativePointer;
+}
+
 type NativePointerValue = NativePointer | ObjectWrapper;
 
 declare const NativeFunction: NativeFunctionConstructor;
@@ -2531,7 +2554,9 @@ declare namespace Stalker {
      * Time in milliseconds between each time the event queue is drained.
      *
      * Defaults to 250 ms, which means that the event queue is drained four
-     * times per second.
+     * times per second. You may also set this property to zero to disable
+     * periodic draining and instead call `Stalker.flush()` when you would
+     * like the queue to be drained.
      */
     let queueDrainInterval: number;
 }
@@ -3532,7 +3557,7 @@ declare namespace ObjC {
         [name: string]: ObjectMethod;
     }
 
-    class ObjectMethod implements ObjectWrapper {
+    interface ObjectMethod extends ObjectWrapper, AnyFunction {
         handle: NativePointer;
 
         /**
@@ -3555,12 +3580,20 @@ declare namespace ObjC {
         /**
          * Argument type names.
          */
-        argumentTypes: string;
+        argumentTypes: string[];
 
         /**
          * Signature.
          */
         types: string;
+
+        /**
+         * Makes a new method wrapper with custom NativeFunction options.
+         *
+         * Useful for e.g. setting `traps: "all"` to perform execution tracing
+         * in conjunction with Stalker.
+         */
+        clone: (options: NativeFunctionOptions) => ObjectMethod;
     }
 
     /**
@@ -3626,9 +3659,14 @@ declare namespace ObjC {
      * implementation.
      */
     class Block implements ObjectWrapper {
-        constructor(target: NativePointer | MethodSpec<BlockMethodImplementation>);
+        constructor(target: NativePointer | MethodSpec<BlockMethodImplementation>, options?: NativeFunctionOptions);
 
         handle: NativePointer;
+
+        /**
+         * Signature, if available.
+         */
+        types?: string;
 
         /**
          * Current implementation. You may replace it by assigning to this property.
@@ -3755,6 +3793,14 @@ declare namespace ObjC {
     function selectorAsString(sel: NativePointerValue): string;
 
     interface ProxySpec<D extends ProxyData = ProxyData, T = ObjC.Object, S = ObjC.Object> {
+        /**
+         * Name of the proxy class.
+         *
+         * Omit this if you don’t care about the globally visible name and would like the runtime to auto-generate one
+         * for you.
+         */
+        name?: string;
+
         /**
          * Protocols this proxy class conforms to.
          */
@@ -3999,9 +4045,8 @@ declare namespace Java {
     /**
      * Enumerates class loaders.
      *
-     * You may assign such a loader to `Java.classFactory.loader` to make
-     * `Java.use()` look for classes on a specific loader instead of the default
-     * loader used by the app.
+     * You may pass such a loader to `Java.ClassFactory.get()` to be able to
+     * `.use()` classes on the specified class loader.
      *
      * @param callbacks Object with callbacks.
      */
@@ -4046,12 +4091,12 @@ declare namespace Java {
      * unloaded. Static and non-static methods are available, and you can even
      * replace method implementations.
      *
-     * Uses the app's class loader by default, but you may customize this by
-     * assigning a different loader instance to `Java.classFactory.loader`.
+     * Uses the app's class loader, but you may access classes on other loaders
+     * by calling `Java.ClassFactory.get()`.
      *
      * @param className Canonical class name to get a wrapper for.
      */
-    function use(className: string, options?: UseOptions): Wrapper;
+    function use<T extends Members<T> = {}>(className: string): Wrapper<T>;
 
     /**
      * Opens the .dex file at `filePath`.
@@ -4072,9 +4117,9 @@ declare namespace Java {
     /**
      * Duplicates a JavaScript wrapper for later use outside replacement method.
      *
-     * @param handle An existing wrapper retrieved from `this` in replacement method.
+     * @param obj An existing wrapper retrieved from `this` in replacement method.
      */
-    function retain(obj: Wrapper): Wrapper;
+    function retain<T extends Members<T> = {}>(obj: Wrapper<T>): Wrapper<T>;
 
     /**
      * Creates a JavaScript wrapper given the existing instance at `handle` of
@@ -4083,7 +4128,10 @@ declare namespace Java {
      * @param handle An existing wrapper or a JNI handle.
      * @param klass Class wrapper for type to cast to.
      */
-    function cast(handle: Wrapper | NativePointerValue, klass: Wrapper): Wrapper;
+    function cast<From extends Members<From> = {}, To extends Members<To> = {}>(
+        handle: Wrapper<From> | NativePointerValue,
+        klass: Wrapper<To>
+    ): Wrapper<To>;
 
     /**
      * Creates a Java array with elements of the specified `type`, from a
@@ -4118,15 +4166,21 @@ declare namespace Java {
 
     const vm: VM;
 
+    /**
+     * The default class factory used to implement e.g. `Java.use()`.
+     * Uses the application's main class loader.
+     */
     const classFactory: ClassFactory;
 
     interface EnumerateLoadedClassesCallbacks {
         /**
-         * Called with the name of each currently loaded class.
+         * Called with the name of each currently loaded class, and a JNI
+         * reference for its Java Class object.
          *
-         * Pass this to `Java.use()` to get a JavaScript wrapper.
+         * Pass the `name` to `Java.use()` to get a JavaScript wrapper.
+         * You may also `Java.cast()` the `handle` to `java.lang.Class`.
          */
-        onMatch: (className: string) => void;
+        onMatch: (name: string, handle: NativePointer) => void;
 
         /**
          * Called when all loaded classes have been enumerated.
@@ -4147,17 +4201,6 @@ declare namespace Java {
         onComplete: () => void;
     }
 
-    interface UseOptions {
-        /**
-         * Whether to consult the class wrapper cache – which is the default
-         * behavior – or skip it and create a brand new class wrapper.
-         *
-         * Skipping the cache is useful when dealing with multiple class-loaders
-         * and colliding class names.
-         */
-        cache?: "consult" | "skip";
-    }
-
     interface ChooseCallbacks {
         /**
          * Called with each live instance found with a ready-to-use `instance`
@@ -4174,23 +4217,30 @@ declare namespace Java {
         onComplete: () => void;
     }
 
+    type Members<T> = Record<keyof T, MethodDispatcher | Field>;
+
     /**
      * Dynamically generated wrapper for any Java class, instance, or interface.
      */
-    interface Wrapper {
+    type Wrapper<T extends Members<T> = {}> = {
+        /**
+         * Automatically inject holder's type to all fields and methods
+         */
+        [K in keyof T]: T[K] extends Field<infer Value> ? Field<Value, T> : MethodDispatcher<T>
+    } & {
         /**
          * Allocates and initializes a new instance of the given class.
          *
          * Use this to create a new instance.
          */
-        $new: MethodDispatcher;
+        $new: MethodDispatcher<T>;
 
         /**
          * Allocates a new instance without initializing it.
          *
          * Call `$init()` to initialize it.
          */
-        $alloc: MethodDispatcher;
+        $alloc: MethodDispatcher<T>;
 
         /**
          * Initializes an instance that was allocated but not yet initialized.
@@ -4198,7 +4248,7 @@ declare namespace Java {
          *
          * Replace the `implementation` property to hook a given constructor.
          */
-        $init: MethodDispatcher;
+        $init: MethodDispatcher<T>;
 
         /**
          * Retrieves a `java.lang.Class` wrapper for the current class.
@@ -4219,13 +4269,13 @@ declare namespace Java {
          * Methods and fields.
          */
         [name: string]: any;
-    }
+    };
 
-    interface MethodDispatcher extends Method {
+    interface MethodDispatcher<Holder extends Members<Holder> = {}> extends Method<Holder> {
         /**
          * Available overloads.
          */
-        overloads: Method[];
+        overloads: Array<Method<Holder>>;
 
         /**
          * Obtains a specific overload.
@@ -4233,10 +4283,10 @@ declare namespace Java {
          * @param args Signature of the overload to obtain.
          *             For example: `"java.lang.String", "int"`.
          */
-        overload(...args: string[]): Method;
+        overload(...args: string[]): Method<Holder>;
     }
 
-    interface Method {
+    interface Method<Holder extends Members<Holder> = {}> {
         (...params: any[]): any;
 
         /**
@@ -4247,7 +4297,7 @@ declare namespace Java {
         /**
          * Class that this method belongs to.
          */
-        holder: Wrapper;
+        holder: Wrapper<Holder>;
 
         /**
          * What kind of method this is, i.e. constructor vs static vs instance.
@@ -4264,7 +4314,7 @@ declare namespace Java {
          * replace the original implementation. Assign `null` at a future point
          * to revert back to the original implementation.
          */
-        implementation: MethodImplementation | null;
+        implementation: MethodImplementation<Holder> | null;
 
         /**
          * Method return type.
@@ -4280,20 +4330,28 @@ declare namespace Java {
          * Queries whether the method may be invoked with a given argument list.
          */
         canInvokeWith: (...args: any[]) => boolean;
+
+        /**
+         * Makes a new method wrapper with custom NativeFunction options.
+         *
+         * Useful for e.g. setting `traps: "all"` to perform execution tracing
+         * in conjunction with Stalker.
+         */
+        clone: (options: NativeFunctionOptions) => Method<Holder>;
     }
 
-    type MethodImplementation = (this: Wrapper, ...params: any[]) => any;
+    type MethodImplementation<This extends Members<This> = {}> = (this: Wrapper<This>, ...params: any[]) => any;
 
-    interface Field {
+    interface Field<Value = any, Holder extends Members<Holder> = {}> {
         /**
          * Current value of this field. Assign to update the field's value.
          */
-        value: any;
+        value: Value;
 
         /**
          * Class that this field belongs to.
          */
-        holder: Wrapper;
+        holder: Wrapper<Holder>;
 
         /**
          * What kind of field this is, i.e. static vs instance.
@@ -4457,20 +4515,26 @@ declare namespace Java {
 
     type Env = any;
 
-    interface ClassFactory {
+    class ClassFactory {
         /**
-         * Class loader currently being used. Typically updated by the
-         * first call to `Java.perform()`.
+         * Gets the class factory instance for a given class loader.
          *
-         * You may assign a different `java.lang.ClassLoader` to make
-         * `Java.use()` look for classes on a specific loader instead of
-         * the default loader used by the app.
+         * The default class factory used behind the scenes only interacts
+         * with the application's main class loader. Other class loaders
+         * can be discovered through `Java.enumerateClassLoaders()` and
+         * interacted with through this API.
          */
-        loader: Wrapper | null;
+        static get(classLoader: Wrapper): ClassFactory;
 
         /**
-         * Path to cache directory currently being used. Typically updated by
-         * the first call to `Java.perform()`.
+         * Class loader currently being used. For the default class factory this
+         * is updated by the first call to `Java.perform()`.
+         */
+        readonly loader: Wrapper | null;
+
+        /**
+         * Path to cache directory currently being used. For the default class
+         * factory this is updated by the first call to `Java.perform()`.
          */
         cacheDir: string;
 
@@ -4480,6 +4544,72 @@ declare namespace Java {
          * Defaults to `{ prefix: "frida", suffix: "dat" }`.
          */
         tempFileNaming: TempFileNaming;
+
+        /**
+         * Dynamically generates a JavaScript wrapper for `className` that you can
+         * instantiate objects from by calling `$new()` on to invoke a constructor.
+         * Call `$dispose()` on an instance to clean it up explicitly, or wait for
+         * the JavaScript object to get garbage-collected, or script to get
+         * unloaded. Static and non-static methods are available, and you can even
+         * replace method implementations.
+         *
+         * @param className Canonical class name to get a wrapper for.
+         */
+        use<T extends Members<T> = {}>(className: string): Wrapper<T>;
+
+        /**
+         * Opens the .dex file at `filePath`.
+         *
+         * @param filePath Path to .dex to open.
+         */
+        openClassFile(filePath: string): DexFile;
+
+        /**
+         * Enumerates live instances of the `className` class by scanning the Java
+         * VM's heap.
+         *
+         * @param className Name of class to enumerate instances of.
+         * @param callbacks Object with callbacks.
+         */
+        choose(className: string, callbacks: ChooseCallbacks): void;
+
+        /**
+         * Duplicates a JavaScript wrapper for later use outside replacement method.
+         *
+         * @param obj An existing wrapper retrieved from `this` in replacement method.
+         */
+        retain<T extends Members<T> = {}>(obj: Wrapper<T>): Wrapper<T>;
+
+        /**
+         * Creates a JavaScript wrapper given the existing instance at `handle` of
+         * given class `klass` as returned from `Java.use()`.
+         *
+         * @param handle An existing wrapper or a JNI handle.
+         * @param klass Class wrapper for type to cast to.
+         */
+        cast<From extends Members<From> = {}, To extends Members<To> = {}>(
+            handle: Wrapper<From> | NativePointerValue,
+            klass: Wrapper<To>
+        ): Wrapper<To>;
+
+        /**
+         * Creates a Java array with elements of the specified `type`, from a
+         * JavaScript array `elements`. The resulting Java array behaves like
+         * a JS array, but can be passed by reference to Java APIs in order to
+         * allow them to modify its contents.
+         *
+         * @param type Type name of elements.
+         * @param elements Array of JavaScript values to use for constructing the
+         *                 Java array.
+         */
+        array(type: string, elements: any[]): any[];
+
+        /**
+         * Creates a new Java class.
+         *
+         * @param spec Object describing the class to be created.
+         */
+        registerClass(spec: ClassSpec): Wrapper;
     }
 
     interface TempFileNaming {

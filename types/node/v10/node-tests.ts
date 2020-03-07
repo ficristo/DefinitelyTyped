@@ -1147,7 +1147,9 @@ function simplified_stream_ctor_test() {
             cb;
         },
         readableObjectMode: true,
-        writableObjectMode: true
+        writableObjectMode: true,
+        readableHighWaterMark: 2048,
+        writableHighWaterMark: 1024
     });
 
     new stream.Transform({
@@ -1205,7 +1207,9 @@ function simplified_stream_ctor_test() {
         },
         allowHalfOpen: true,
         readableObjectMode: true,
-        writableObjectMode: true
+        writableObjectMode: true,
+        readableHighWaterMark: 2048,
+        writableHighWaterMark: 1024
     });
 }
 
@@ -2217,7 +2221,7 @@ async function asyncStreamPipelineFinished() {
     const ws: tty.WriteStream = new tty.WriteStream(1);
 
     const rsIsRaw: boolean = rs.isRaw;
-    rs.setRawMode(true);
+    const rsRaw: tty.ReadStream = rs.setRawMode(true);
 
     const wsColumns: number = ws.columns;
     const wsRows: number = ws.rows;
